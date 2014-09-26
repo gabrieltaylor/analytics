@@ -7,9 +7,7 @@ var moment = require('moment');
 var AWS = require('aws-sdk');
 var app = express();
 
-AWS.config.loadFromPath('./config.json');
-AWS.config.update({region: 'us-east-1'});
-
+AWS.config.loadFromPath('./config.json'); // Copy example_config.json and substitute values
 
 var HTTP_PORT = 3000,
     HTTPS_PORT = 4443,
@@ -18,9 +16,7 @@ var HTTP_PORT = 3000,
 	  cert: fs.readFileSync(path.resolve(__dirname,'.ssl/www.example.com.cert'))
     },
     Hits = {},
-    Current_minute = ''
-
-
+    Current_minute = 0
 
 
 /*
@@ -65,13 +61,14 @@ var parseValue = function(value) {
 
 // decode and parse query param param
 var parseDataQuery = function(req, debug) {
-  if (!req.query.data) {
-    if (debug) { console.error('No \'data\' query param defined!') };
+  if (!req.query) {
+    if (debug) { console.error('No query params defined!') };
     return false;
   }
   var data = {};
+  console.log(req.query)
   try {
-    data = JSON.parse(decodeURIComponent(req.query.data));
+    data = querystring.parse(req.query);
   } catch (e) {
     if (debug) { console.error('Failed to JSON parse \'data\' query param') };
     return false;
@@ -79,12 +76,73 @@ var parseDataQuery = function(req, debug) {
   return data;
 }
 
+// decode and parse custom variables
+var parseCustomVariables = function(data, debug) {
+  if (!data.cvar) {
+    if (debug) { console.error('No custom vars defined!') };
+    return false;
+  }
+  var data = {};
+  try {
+    data = JSON.parse(data.cvar); // custom variables scoped to page
+  } catch (e) {
+    if (debug) { console.error('Failed to JSON parse \'cvar\' query param') };
+    return false;
+  }
+  try {
+    data = merge(data, JSON.parse(data._cvar)); // custom variables scoped to visit
+  } catch (e) {
+    if (debug) { console.error('Failed to JSON parse \'_cvar\' query param') };
+  }
+  return data;
+}
+
+// Returns merged JSON.
+//
+// Eg.
+// merge( { a: { b: 1, c: 2 } }, { a: { b: 3, d: 4 } } )
+// -> { a: { b: 3, c: 2, d: 4 } }
+//
+// @arguments JSON's
+//
+// Code from: https://github.com/rxaviers/cldr
+// 
+var merge = function() {
+    var destination = {},
+        sources = [].slice.call( arguments, 0 );
+    sources.forEach(function( source ) {
+        var prop;
+        for ( prop in source ) {
+            if ( prop in destination && Array.isArray( destination[ prop ] ) ) {
+                
+                // Concat Arrays
+                destination[ prop ] = destination[ prop ].concat( source[ prop ] );
+                
+            } else if ( prop in destination && typeof destination[ prop ] === "object" ) {
+                
+                // Merge Objects
+                destination[ prop ] = merge( destination[ prop ], source[ prop ] );
+                
+            } else {
+                
+                // Set new values
+                destination[ prop ] = source[ prop ];
+                
+            }
+        }
+    });
+    return destination;
+};
+
 // create single event based on data which includes time, event & properties
 var createAndLogEvent = function(data, req) {
   var time = (data && data.t) || new Date().toISOString(),
       event = (data && data.e) || "unknown",
-      properties = (data && data.kv) || {};
+      properties = {};
+      properties.data = data || {};
 
+  // extract_custom_vars
+  properties.custom_variables = parseCustomVariables(data);
 
   // append some request headers (ip, referrer, user-agent) to list of properties
   properties.ip = req.ip;
@@ -93,7 +151,7 @@ var createAndLogEvent = function(data, req) {
   properties.useragent = req.get("User-Agent");
 
   var minute = String(getMinute());
-  console.log(minute);
+
   if (minute !== Current_minute){
     push_to_db(Current_minute);
     Current_minute = minute;
@@ -101,13 +159,9 @@ var createAndLogEvent = function(data, req) {
   }
 
   var id = properties.ip
-  // dict[key] = (dict[key] || 0) + 1;
+
   Hits[minute][String(id)] = (Hits[minute][String(id)] || {})
   Hits[minute][String(id)]['hits'] = (Hits[minute][String(id)]['hits'] || 0) +1
-  console.log(Hits[minute][String(id)]);
-  console.log(Hits[minute][String(id)]['hits']);
-  console.log(Hits[minute]);
-  console.log(Object.keys(Hits[minute]).length);
 
   // log event data in splunk friendly timestamp + key/value(s) format
   // var entry = time + " event=" + parseValue(event);
@@ -127,63 +181,38 @@ var createAndLogEvent = function(data, req) {
 
 var push_to_db = function(minute) {
   var dynamoDB = new AWS.DynamoDB();
-  if(minute !== ''){
-    console.log("Hello");
-    console.log(minute);
-    // console.log(Hits[minute].length);
-    // for (i = 0; i < Object.keys(Hits[key]).length; i++) { 
+  if(minute !== 0){
     for (item in Hits[minute]) { 
-    console.log('item');
-    console.log(item);
-    console.log(Hits[minute][item]);
-    console.log(Hits[minute][item].hits);
-    console.log(JSON.stringify(item['hits']));
-    // console.log(Hits[minute][item]);JSON.stringify(Hits[minute][item])
-    dynamoDB.updateItem(
-    {
-      "TableName":"ip_address",
-      "Key":
-          {
-            "address" : {"S": item},
-            "minute"  : {"N": minute}
-          },
-      "AttributeUpdates"  : {  "Hits"  : {"Value":{"N": String(Hits[minute][item].hits)},
-                                     "Action": "ADD"}
-          },
-      "ReturnValues"          : "ALL_NEW"
-    }, 
-    function(err, res, cap) {
-      if (err !== null) {
-        console.log(err);
-      }
-      if (res !== null) {
-        console.log(res);
-      }
-      if (cap !== null) {
-        console.log(cap);
-      }
-    });
-    console.log(" Item are succesfully intest in table .................."); 
+      dynamoDB.updateItem(
+      {
+        "TableName":"ip_address",
+        "Key":
+            {
+              "address" : {"S": item},
+              "minute"  : {"N": minute}
+            },
+        "AttributeUpdates"  : {  "Hits"  : {"Value":{"N": String(Hits[minute][item].hits)},
+                                       "Action": "ADD"}
+            },
+        "ReturnValues"  : "ALL_NEW"
+      }, 
+      function(err, res, cap) {
+        if(err !== null) {
+          console.log(err);
+        }
+        if(res !== null) {
+          console.log(res);
+        }
+        if(cap !== null) {
+          console.log(cap);
+        }
+      });
+    console.log("Dynamo done!"); 
     }
   }
 }
 
 var getMinute = function() {
-  // var date = new Date;
-  // date.setTime(date.getTime());
-
-  // var seconds = date.getSeconds();
-  // var minutes = date.getMinutes();
-  // var hour = date.getHours();
-
-  // var year = date.getFullYear();
-  // var month = date.getMonth(); // beware: January = 0; February = 1, etc.
-  // var day = date.getDate();
-
-  // var dayOfWeek = date.getDay(); // Sunday = 0, Monday = 1, etc.
-  // var milliSeconds = date.getMilliseconds();
-
-  // console.log([minute, hour, day, month, year].join(":"));
   return moment().seconds(0).milliseconds(0).format('X');
 }
 
@@ -198,6 +227,7 @@ app.use(function(err, req, res, next) {
   console.error(err.stack);
   res.send(500, 'Something broke!');
 });
+app.use(express.static(__dirname + '/public'));
 
 /*
  *  Create Tracking Endpoints
@@ -205,8 +235,9 @@ app.use(function(err, req, res, next) {
  */
 
 // API endpoint tracking
-app.get('/track', function(req, res) {
+app.get('/', function(req, res) {
   res.setHeader('Content-Type', 'application/json');
+  // console.log(req);
   var data;
   // data query param required here
   if ((data = parseDataQuery(req, true)) === false) {
@@ -230,7 +261,7 @@ app.get('/t.gif', function(req, res) {
   res.sendfile(path.resolve(__dirname, './t.gif'));
 });
 
-// root
+//root
 app.get('/', function(req, res) {
   res.send("");
 });
