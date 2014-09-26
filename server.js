@@ -3,14 +3,25 @@ var fs = require('fs');
 var path = require('path');
 var http = require('http');
 var https = require('https');
+var moment = require('moment');
+var AWS = require('aws-sdk');
 var app = express();
+
+AWS.config.loadFromPath('./config.json');
+AWS.config.update({region: 'us-east-1'});
+
 
 var HTTP_PORT = 3000,
     HTTPS_PORT = 4443,
     SSL_OPTS = {
       key: fs.readFileSync(path.resolve(__dirname,'.ssl/www.example.com.key')),
 	  cert: fs.readFileSync(path.resolve(__dirname,'.ssl/www.example.com.cert'))
-    };
+    },
+    Hits = {},
+    Current_minute = ''
+
+
+
 
 /*
  *  Define Middleware & Utilties
@@ -74,26 +85,106 @@ var createAndLogEvent = function(data, req) {
       event = (data && data.e) || "unknown",
       properties = (data && data.kv) || {};
 
+
   // append some request headers (ip, referrer, user-agent) to list of properties
   properties.ip = req.ip;
   properties.origin = (req.get("Origin")) ? req.get("Origin").replace(/^https?:\/\//, '') : "";
   properties.page = req.get("Referer");
   properties.useragent = req.get("User-Agent");
 
-  // log event data in splunk friendly timestamp + key/value(s) format
-  var entry = time + " event=" + parseValue(event);
-  for (var key in properties) {
-    var value = parseValue(properties[key]);
-    entry += " " + key + "=" + value;
+  var minute = String(getMinute());
+  console.log(minute);
+  if (minute !== Current_minute){
+    push_to_db(Current_minute);
+    Current_minute = minute;
+    Hits[minute] = {}
   }
-  entry += "\n";
-  fs.appendFile(path.resolve(__dirname, './events.log'), entry, function(err) {
-    if (err) {
-      console.log(err);
-    } else {
-      //console.log("Logged tracked data");
+
+  var id = properties.ip
+  // dict[key] = (dict[key] || 0) + 1;
+  Hits[minute][String(id)] = (Hits[minute][String(id)] || {})
+  Hits[minute][String(id)]['hits'] = (Hits[minute][String(id)]['hits'] || 0) +1
+  console.log(Hits[minute][String(id)]);
+  console.log(Hits[minute][String(id)]['hits']);
+  console.log(Hits[minute]);
+  console.log(Object.keys(Hits[minute]).length);
+
+  // log event data in splunk friendly timestamp + key/value(s) format
+  // var entry = time + " event=" + parseValue(event);
+  // for (var key in properties) {
+  //   var value = parseValue(properties[key]);
+  //   entry += " " + key + "=" + value;
+  // }
+  // entry += "\n";
+  // fs.appendFile(path.resolve(__dirname, './events.log'), entry, function(err) {
+  //   if (err) {
+  //     console.log(err);
+  //   } else {
+  //     //console.log("Logged tracked data");
+  //   }
+  // });
+}
+
+var push_to_db = function(minute) {
+  var dynamoDB = new AWS.DynamoDB();
+  if(minute !== ''){
+    console.log("Hello");
+    console.log(minute);
+    // console.log(Hits[minute].length);
+    // for (i = 0; i < Object.keys(Hits[key]).length; i++) { 
+    for (item in Hits[minute]) { 
+    console.log('item');
+    console.log(item);
+    console.log(Hits[minute][item]);
+    console.log(Hits[minute][item].hits);
+    console.log(JSON.stringify(item['hits']));
+    // console.log(Hits[minute][item]);JSON.stringify(Hits[minute][item])
+    dynamoDB.updateItem(
+    {
+      "TableName":"ip_address",
+      "Key":
+          {
+            "address" : {"S": item},
+            "minute"  : {"N": minute}
+          },
+      "AttributeUpdates"  : {  "Hits"  : {"Value":{"N": String(Hits[minute][item].hits)},
+                                     "Action": "ADD"}
+          },
+      "ReturnValues"          : "ALL_NEW"
+    }, 
+    function(err, res, cap) {
+      if (err !== null) {
+        console.log(err);
+      }
+      if (res !== null) {
+        console.log(res);
+      }
+      if (cap !== null) {
+        console.log(cap);
+      }
+    });
+    console.log(" Item are succesfully intest in table .................."); 
     }
-  });
+  }
+}
+
+var getMinute = function() {
+  // var date = new Date;
+  // date.setTime(date.getTime());
+
+  // var seconds = date.getSeconds();
+  // var minutes = date.getMinutes();
+  // var hour = date.getHours();
+
+  // var year = date.getFullYear();
+  // var month = date.getMonth(); // beware: January = 0; February = 1, etc.
+  // var day = date.getDate();
+
+  // var dayOfWeek = date.getDay(); // Sunday = 0, Monday = 1, etc.
+  // var milliSeconds = date.getMilliseconds();
+
+  // console.log([minute, hour, day, month, year].join(":"));
+  return moment().seconds(0).milliseconds(0).format('X');
 }
 
 /*

@@ -4,6 +4,8 @@
   "version": "0.0.1",
   "private": true,
   "dependencies": {
-    "express": "3.2.5"
+    "express": "3.2.5",
+    "aws-sdk": "2.0.17",
+     "moment": "2.8.3"
   }
 }
